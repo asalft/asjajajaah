@@ -9,7 +9,7 @@ import glob
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
-from telethon.tl.functions.photos import UploadProfilePhotoRequest
+from telethon.tl.functions.photos import UploadProfilePhotoRequest, DeletePhotosRequest
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,13 +29,13 @@ API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
 SESSION_STORE = os.environ.get("SESSION_STORE", "./sessions.json")
 
-PHOTO_FOLDER = "photos"       # المجلد الذي يحتوي الصور
-CHANGE_INTERVAL = 300         # عدد الثواني بين كل تغيير (5 دقائق)
+PHOTO_FOLDER = "photos"
+CHANGE_INTERVAL = 30  # ثواني
 
-AWAIT_PHONE, AWAIT_CODE, AWAIT_PASS, AWAIT_PHOTO = range(4)
+AWAIT_PHONE, AWAIT_CODE, AWAIT_PASS, AWAIT_PHOTO, AWAIT_SESSION = range(5)
 clients = {}
 
-# --- تحميل/حفظ الجلسات ---
+# --- تحميل وحفظ الجلسات ---
 def load_sessions():
     try:
         with open(SESSION_STORE, "r", encoding="utf-8") as f:
@@ -50,8 +50,9 @@ def save_sessions(sessions):
 # --- لوحة التحكم ---
 def main_menu():
     kb = [
-        [InlineKeyboardButton("🔐 تسجيل الدخول", callback_data="login"),
-         InlineKeyboardButton("📸 تغيير الصورة الآن", callback_data="change_photo")],
+        [InlineKeyboardButton("🔐 تسجيل الدخول برقم الهاتف", callback_data="login"),
+         InlineKeyboardButton("🔑 تسجيل الدخول بجلسة", callback_data="login_session")],
+        [InlineKeyboardButton("📸 تغيير الصورة الآن", callback_data="change_photo")],
         [InlineKeyboardButton("⛔ تسجيل الخروج", callback_data="logout")],
     ]
     return InlineKeyboardMarkup(kb)
@@ -76,8 +77,11 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if q.data == "login":
         await q.edit_message_text("📞 أرسل رقم هاتفك الآن (مثال: +201234567890):")
         return AWAIT_PHONE
+    elif q.data == "login_session":
+        await q.edit_message_text("📨 أرسل **String Session** هنا:")
+        return AWAIT_SESSION
     elif q.data == "change_photo":
-        await q.edit_message_text("📸 أرسل الصورة الآن بأي طريقة (صورة أو ملف أو محوّلة).")
+        await q.edit_message_text("📸 أرسل الصورة الآن (صورة أو ملف صورة).")
         return AWAIT_PHOTO
     elif q.data == "logout":
         sessions = load_sessions()
@@ -97,7 +101,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     else:
         await q.edit_message_text("❓ خيار غير معروف.")
 
-# --- تسجيل الدخول ---
+# --- تسجيل الدخول برقم الهاتف ---
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     phone = update.message.text.strip()
@@ -150,7 +154,25 @@ async def receive_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ تم تسجيل الدخول بنجاح إلى: {me.first_name}", reply_markup=main_menu())
     return ConversationHandler.END
 
-# --- استلام الصور ---
+# --- تسجيل الدخول عبر String Session ---
+async def receive_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    session_str = update.message.text.strip()
+    client = TelegramClient(StringSession(session_str), API_ID, API_HASH)
+    await client.connect()
+    try:
+        me = await client.get_me()
+        sessions = load_sessions()
+        sessions[str(uid)] = {"session": session_str}
+        save_sessions(sessions)
+        clients[uid] = {"client": client, "me": me.to_dict()}
+        await update.message.reply_text(f"✅ تم تسجيل الدخول بنجاح إلى: {me.first_name}", reply_markup=main_menu())
+    except Exception as e:
+        await update.message.reply_text(f"❌ فشل تسجيل الدخول: {e}")
+        await client.disconnect()
+    return ConversationHandler.END
+
+# --- استلام الصور وتغييرها فورًا ---
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     sessions = load_sessions()
@@ -164,6 +186,9 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         client = TelegramClient(StringSession(sess["session"]), API_ID, API_HASH)
         await client.connect()
         clients[uid] = {"client": client}
+
+    if not await client.is_connected():
+        await client.connect()
 
     tmp_dir = tempfile.gettempdir()
     files = []
@@ -182,6 +207,9 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for path in files:
         try:
+            photos = await client.get_profile_photos('me')
+            if photos.total > 0:
+                await client(DeletePhotosRequest(photos[:]))
             uploaded = await client.upload_file(path)
             await client(UploadProfilePhotoRequest(uploaded))
             await update.message.reply_text("✅ تم تحديث الصورة الشخصية بنجاح.")
@@ -197,11 +225,10 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- التبديل التلقائي للصور ---
 async def auto_change_photos():
-    await asyncio.sleep(10)  # انتظار بسيط بعد التشغيل
+    await asyncio.sleep(10)
     print("🔁 بدأ تبديل الصور التلقائي...")
     while True:
         try:
-            # اختر أي عميل متصل
             if not clients:
                 await asyncio.sleep(CHANGE_INTERVAL)
                 continue
@@ -218,9 +245,15 @@ async def auto_change_photos():
                     continue
 
                 chosen = random.choice(photo_files)
-                uploaded = await client.upload_file(chosen)
-                await client(UploadProfilePhotoRequest(uploaded))
-                print(f"✅ تم تعيين الصورة الجديدة: {chosen}")
+                try:
+                    photos = await client.get_profile_photos('me')
+                    if photos.total > 0:
+                        await client(DeletePhotosRequest(photos[:]))
+                    uploaded = await client.upload_file(chosen)
+                    await client(UploadProfilePhotoRequest(uploaded))
+                    print(f"✅ تم تعيين الصورة الجديدة: {chosen}")
+                except Exception as e:
+                    print(f"⚠️ خطأ أثناء رفع الصورة التلقائي: {e}")
 
             await asyncio.sleep(CHANGE_INTERVAL)
         except Exception as e:
@@ -246,14 +279,8 @@ def build_conversation():
             AWAIT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_phone)],
             AWAIT_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)],
             AWAIT_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_pass)],
-            AWAIT_PHOTO: [MessageHandler(
-                (
-                    filters.PHOTO |
-                    filters.Document.IMAGE |
-                    (filters.FORWARDED & (filters.PHOTO | filters.Document.IMAGE))
-                ),
-                receive_photo
-            )],
+            AWAIT_PHOTO: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_photo)],
+            AWAIT_SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_session)],
         },
         fallbacks=[],
         allow_reentry=True,
