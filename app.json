@@ -1,0 +1,10 @@
+{
+  "name": "telegram-bot",
+  "description": "بوت تسجيل الدخول عبر Telethon و python-telegram-bot",
+  "repository": "https://github.com/username/repo",
+  "stack": "heroku-20",
+  "buildpacks": [
+    { "url": "heroku/python" }
+  ],
+  "addons": []
+}
