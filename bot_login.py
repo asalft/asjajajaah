@@ -112,13 +112,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await q.edit_message_text("خيار غير معروف.")
 
 async def awaitable_is_connected(client: TelegramClient):
+    """
+    Telethon's is_connected قد تكون sync أو coroutine حسب النسخة،
+    فانظر هنا وادعم الحالتين.
+    """
     try:
-        return client.is_connected()
+        res = client.is_connected()
+        if asyncio.iscoroutine(res):
+            return await res
+        return res
     except TypeError:
         try:
             return await client.is_connected()
         except:
             return False
+    except Exception:
+        return False
 
 # --- Receive phone ---
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -137,7 +146,10 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("تم إرسال كود التسجيل إلى حسابك. أرسل الكود هنا.")
         return AWAIT_CODE
     except Exception as e:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except:
+            pass
         await update.message.reply_text(f"فشل إرسال الكود: {e}")
         return ConversationHandler.END
 
@@ -175,7 +187,10 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"تم تسجيل الدخول بنجاح إلى: {me.username or me.first_name}", reply_markup=main_menu())
         return ConversationHandler.END
     except Exception as e:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except:
+            pass
         await update.message.reply_text(f"فشل تسجيل الدخول: {e}")
         return ConversationHandler.END
 
@@ -199,7 +214,10 @@ async def receive_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"تم تسجيل الدخول بنجاح (2FA) إلى: {me.username or me.first_name}", reply_markup=main_menu())
         return ConversationHandler.END
     except Exception as e:
-        await client.disconnect()
+        try:
+            await client.disconnect()
+        except:
+            pass
         await update.message.reply_text(f"فشل تسجيل الدخول بكلمة المرور: {e}")
         return ConversationHandler.END
 
@@ -311,7 +329,7 @@ async def shutdown_clients():
     clients.clear()
 
 # --- Conversation builder ---
-    def build_conversation():
+def build_conversation():
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(callback_query_handler)],
         states={
@@ -324,9 +342,9 @@ async def shutdown_clients():
         fallbacks=[],
         allow_reentry=True,
     )
-    
-    # SIGTERM و SIGINT لإغلاق الجلسات عند إيقاف Heroku
-    def main():
+
+# --- Main ---
+def main():
     if not BOT_TOKEN or not API_ID or not API_HASH or not OWNER_ID:
         print("تأكد من إعداد BOT_TOKEN و API_ID و API_HASH و OWNER_ID في Config Vars على Heroku")
         return
@@ -334,18 +352,35 @@ async def shutdown_clients():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(build_conversation())
+    # CallbackQueryHandler مضاف أيضاً في entry_points لكن إضافته مرة ثانية آمنة
     app.add_handler(CallbackQueryHandler(callback_query_handler))
 
-    loop = asyncio.get_event_loop()
+    # احصل على حلقة الأحداث
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
     # SIGTERM و SIGINT لإغلاق الجلسات عند إيقاف Heroku
-    def stop_signal_handler():
+    def stop_signal_handler(signum, frame):
         print("إشارة إيقاف، جاري فصل الجلسات...")
+        # ابدأ مهمة إغلاق الجلسات ثم أوقف الحلقة
         loop.create_task(shutdown_clients())
-        loop.stop()
+        # نترك إيقاف الحلقة بعد السماح للمهام أن تبدأ
+        # لا ننفذ loop.stop() فوراً هنا إن كانت هناك مهام مهمة تنتظر الاكتمال،
+        # لكن لسهولة العمل نوقف الحلقة بعد فترة قصيرة (يمكن تعديل حسب الحاجة).
+        try:
+            loop.stop()
+        except Exception:
+            pass
 
-    import signal
     signal.signal(signal.SIGTERM, stop_signal_handler)
-signal.signal(signal.SIGINT, stop_signal_handler)
+    signal.signal(signal.SIGINT, stop_signal_handler)
+
     print("بدء التشغيل. البوت جاهز للعمل.")
+    # run_polling internally manages the loop; هنا نستخدمها كما هي
     app.run_polling()
+
+if __name__ == "__main__":
+    main()
