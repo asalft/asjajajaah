@@ -311,7 +311,7 @@ async def shutdown_clients():
     clients.clear()
 
 # --- Conversation builder ---
-def build_conversation():
+    def build_conversation():
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(callback_query_handler)],
         states={
