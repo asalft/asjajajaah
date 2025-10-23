@@ -30,7 +30,7 @@ API_HASH = os.environ.get("API_HASH")
 SESSION_STORE = os.environ.get("SESSION_STORE", "./sessions.json")
 
 PHOTO_FOLDER = "photos"
-CHANGE_INTERVAL = 30  # ثواني
+CHANGE_INTERVAL = 300  # ثواني
 
 AWAIT_PHONE, AWAIT_CODE, AWAIT_PASS, AWAIT_PHOTO, AWAIT_SESSION = range(5)
 clients = {}
@@ -187,7 +187,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await client.connect()
         clients[uid] = {"client": client}
 
-    if not await client.is_connected():
+    if not client.is_connected():  # ✅ بدون await
         await client.connect()
 
     tmp_dir = tempfile.gettempdir()
@@ -235,7 +235,7 @@ async def auto_change_photos():
 
             for uid, entry in clients.items():
                 client = entry["client"]
-                if not await client.is_connected():
+                if not client.is_connected():  # ✅ بدون await
                     await client.connect()
 
                 photo_files = glob.glob(os.path.join(PHOTO_FOLDER, "*"))
@@ -306,7 +306,6 @@ def main():
     signal.signal(signal.SIGTERM, stop_signal_handler)
     signal.signal(signal.SIGINT, stop_signal_handler)
 
-    # تشغيل مهمة التبديل التلقائي بالتوازي
     loop.create_task(auto_change_photos())
 
     print("🤖 البوت يعمل الآن...")
