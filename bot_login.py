@@ -320,12 +320,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(build_conversation())
     app.add_handler(CallbackQueryHandler(callback_query_handler))
-
-    app.post_init(on_startup)
-    app.shutdown(on_shutdown)
+    # بعد: استخدم run_polling مع on_startup و on_shutdown
+    app.run_polling(
+    stop_signals=None,  # Heroku يرسل SIGTERM تلقائيًا
+    on_startup=on_startup,
+    on_shutdown=on_shutdown
+)
 
     print("بدء التشغيل...")
-    app.run_polling()
+    app.run_polling(on_startup=on_startup, on_shutdown=on_shutdown)
 
 if __name__ == "__main__":
     main()
