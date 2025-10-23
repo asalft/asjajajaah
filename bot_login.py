@@ -3,6 +3,7 @@ import os
 import json
 import asyncio
 import tempfile
+import signal
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -21,19 +22,19 @@ from telegram.ext import (
     filters,
 )
 
-# استخدم المتغيرات البيئية فقط
+# --- إعدادات من متغيرات البيئة ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
-SESSION_STORE = os.environ.get("SESSION_STORE", "./sessions.json")  # سيظل مؤقت على Heroku
+SESSION_STORE = os.environ.get("SESSION_STORE", "./sessions.json")  # مؤقت على Heroku
 
-# Conversation states
+# --- Conversation states ---
 AWAIT_PHONE, AWAIT_CODE, AWAIT_PASS, AWAIT_NAME, AWAIT_PHOTO = range(5)
 
-clients = {}  # ذاكرة الجلسات
+clients = {}  # ذاكرة الجلسات في الذاكرة
 
-# Helpers
+# --- Helpers ---
 def load_sessions():
     try:
         with open(SESSION_STORE, "r", encoding="utf-8") as f:
@@ -57,7 +58,6 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(kb)
 
-# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
@@ -69,7 +69,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=main_menu()
     )
 
-# Callback handler
+# --- Callback handler ---
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -121,7 +121,7 @@ async def awaitable_is_connected(client: TelegramClient):
         except:
             return False
 
-# Receive phone
+# --- Receive phone ---
 async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
@@ -142,7 +142,7 @@ async def receive_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"فشل إرسال الكود: {e}")
         return ConversationHandler.END
 
-# Receive code
+# --- Receive code ---
 async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
@@ -180,7 +180,7 @@ async def receive_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"فشل تسجيل الدخول: {e}")
         return ConversationHandler.END
 
-# Receive 2FA password
+# --- Receive 2FA password ---
 async def receive_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
@@ -204,7 +204,7 @@ async def receive_pass(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"فشل تسجيل الدخول بكلمة المرور: {e}")
         return ConversationHandler.END
 
-# Change name
+# --- Change name ---
 async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
@@ -234,7 +234,7 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"فشل تحديث الاسم: {e}")
     return ConversationHandler.END
 
-# Change photo
+# --- Change photo ---
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
@@ -275,7 +275,7 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     return ConversationHandler.END
 
-# Shutdown all clients
+# --- Shutdown clients ---
 async def shutdown_clients():
     for uid, entry in list(clients.items()):
         try:
@@ -289,6 +289,7 @@ async def shutdown_clients():
             pass
     clients.clear()
 
+# --- Conversation builder ---
 def build_conversation():
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(callback_query_handler)],
@@ -303,14 +304,7 @@ def build_conversation():
         allow_reentry=True,
     )
 
-async def on_startup(app):
-    print("البوت شغّال. جاهز.")
-
-async def on_shutdown(app):
-    print("جاري فصل جلسات Telethon...")
-    await shutdown_clients()
-    print("انتهى الفصل.")
-
+# --- Main function ---
 def main():
     if not BOT_TOKEN or not API_ID or not API_HASH or not OWNER_ID:
         print("تأكد من إعداد BOT_TOKEN و API_ID و API_HASH و OWNER_ID في Config Vars على Heroku")
@@ -320,15 +314,20 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(build_conversation())
     app.add_handler(CallbackQueryHandler(callback_query_handler))
-    # بعد: استخدم run_polling مع on_startup و on_shutdown
-    app.run_polling(
-    stop_signals=None,  # Heroku يرسل SIGTERM تلقائيًا
-    on_startup=on_startup,
-    on_shutdown=on_shutdown
-)
+
+    loop = asyncio.get_event_loop()
+
+    # SIGTERM و SIGINT لإغلاق الجلسات عند إيقاف Heroku
+    def stop_signal_handler():
+        print("إشارة إيقاف، جاري فصل الجلسات...")
+        loop.create_task(shutdown_clients())
+        loop.stop()
+
+    signal.signal(signal.SIGTERM, lambda s, f: stop_signal_handler())
+    signal.signal(signal.SIGINT, lambda s, f: stop_signal_handler())
 
     print("بدء التشغيل...")
-    app.run_polling(on_startup=on_startup, on_shutdown=on_shutdown)
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
