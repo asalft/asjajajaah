@@ -27,11 +27,10 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
-SESSION_STORE = os.environ.get("SESSION_STORE", "./sessions.json")  # مؤقت على Heroku
+SESSION_STORE = os.environ.get("SESSION_STORE", "./sessions.json")
 
 # --- Conversation states ---
 AWAIT_PHONE, AWAIT_CODE, AWAIT_PASS, AWAIT_NAME, AWAIT_PHOTO = range(5)
-
 clients = {}  # ذاكرة الجلسات في الذاكرة
 
 # --- Helpers ---
@@ -107,7 +106,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await q.edit_message_text("أرسل الاسم الجديد. يمكنك كتابة 'الاسم الأول|اللقب' لو أحببت.")
         return AWAIT_NAME
     elif data == "change_photo":
-        await q.edit_message_text("أرسل صورة جديدة الآن (كصورة).")
+        await q.edit_message_text("أرسل الصورة أو الصور الآن. يمكنك إرسال أكثر من صورة متتابعة.")
         return AWAIT_PHOTO
     else:
         await q.edit_message_text("خيار غير معروف.")
@@ -234,15 +233,22 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"فشل تحديث الاسم: {e}")
     return ConversationHandler.END
 
-# --- Change photo ---
+# --- Set profile photos ---
+async def set_profile_photos(client: TelegramClient, file_paths: list, delay: int = 5):
+    for path in file_paths:
+        try:
+            uploaded = await client.upload_file(path)
+            await client(UploadProfilePhotoRequest(uploaded))
+            print(f"تم تعيين الصورة: {path}")
+            await asyncio.sleep(delay)
+        except Exception as e:
+            print(f"فشل تعيين الصورة {path}: {e}")
+
+# --- Receive photo(s) ---
 async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != OWNER_ID:
         await update.message.reply_text("غير مصرح.")
-        return ConversationHandler.END
-
-    if not update.message.photo:
-        await update.message.reply_text("الرجاء إرسال صورة (كصورة).")
         return ConversationHandler.END
 
     entry = clients.get(uid)
@@ -258,21 +264,36 @@ async def receive_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clients[uid] = entry
 
     client: TelegramClient = entry["client"]
-    photo = update.message.photo[-1]
-    tmp_dir = tempfile.gettempdir()
-    file_path = os.path.join(tmp_dir, f"tg_upload_{uid}.jpg")
-    try:
-        await photo.get_file().download(custom_path=file_path)
-        uploaded = await client.upload_file(file_path)
-        await client(UploadProfilePhotoRequest(uploaded))
-        await update.message.reply_text("تم تحديث الصورة الشخصية.", reply_markup=main_menu())
-    except Exception as e:
-        await update.message.reply_text(f"فشل تحديث الصورة: {e}")
-    finally:
+    files_to_set = []
+
+    # Photo
+    if update.message.photo:
+        tmp_dir = tempfile.gettempdir()
+        file_path = os.path.join(tmp_dir, f"tg_upload_{uid}.jpg")
+        await update.message.photo[-1].get_file().download(custom_path=file_path)
+        files_to_set.append(file_path)
+    # Document
+    elif update.message.document:
+        tmp_dir = tempfile.gettempdir()
+        file_path = os.path.join(tmp_dir, f"tg_upload_{uid}_{update.message.document.file_name}")
+        await update.message.document.get_file().download(custom_path=file_path)
+        files_to_set.append(file_path)
+    else:
+        await update.message.reply_text("الرجاء إرسال صورة أو ملف صورة.")
+        return ConversationHandler.END
+
+    # تعيين الصور بفاصل 5 ثواني
+    await set_profile_photos(client, files_to_set, delay=5)
+
+    await update.message.reply_text("تم تحديث الصورة/الصور الشخصية.", reply_markup=main_menu())
+
+    # حذف الملفات المؤقتة
+    for f in files_to_set:
         try:
-            os.remove(file_path)
+            os.remove(f)
         except:
             pass
+
     return ConversationHandler.END
 
 # --- Shutdown clients ---
@@ -298,7 +319,7 @@ def build_conversation():
             AWAIT_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)],
             AWAIT_PASS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_pass)],
             AWAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name)],
-            AWAIT_PHOTO: [MessageHandler(filters.PHOTO, receive_photo)],
+            AWAIT_PHOTO: [MessageHandler(filters.ALL, receive_photo)],
         },
         fallbacks=[],
         allow_reentry=True,
@@ -326,8 +347,4 @@ def main():
     signal.signal(signal.SIGTERM, lambda s, f: stop_signal_handler())
     signal.signal(signal.SIGINT, lambda s, f: stop_signal_handler())
 
-    print("بدء التشغيل...")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+    print("بدء التشغيل
