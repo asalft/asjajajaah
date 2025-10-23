@@ -345,8 +345,7 @@ async def shutdown_clients():
         loop.stop()
 
     import signal
-    signal.signal(signal.SIGTERM, lambda s, f: stop_signal_handler())
-    signal.signal(signal.SIGINT, lambda s, f: stop_signal_handler())
-
+    signal.signal(signal.SIGTERM, stop_signal_handler)
+signal.signal(signal.SIGINT, stop_signal_handler)
     print("بدء التشغيل. البوت جاهز للعمل.")
     app.run_polling()
